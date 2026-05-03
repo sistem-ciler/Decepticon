@@ -31,8 +31,32 @@ export async function GET(
   const opplanPath = path.join(wsPath, "plan", "opplan.json");
 
   try {
+    const stat = await fs.stat(opplanPath);
     const content = await fs.readFile(opplanPath, "utf-8");
-    return NextResponse.json(JSON.parse(content));
+    const data = JSON.parse(content);
+
+    // Downgrade stale IN_PROGRESS objectives: if the file hasn't been
+    // touched in 10 minutes, any objective still marked in-progress was
+    // abandoned by a crashed loop. Show it as pending so the UI doesn't
+    // lie about it "Running".
+    const STALE_THRESHOLD_MS = 10 * 60 * 1000;
+    if (Date.now() - stat.mtimeMs > STALE_THRESHOLD_MS) {
+      const stale: string[] = [];
+      for (const obj of data.objectives ?? []) {
+        if (obj.status === "in-progress") {
+          obj.status = "pending";
+          stale.push(obj.id);
+        }
+      }
+      if (stale.length > 0) {
+        console.log(
+          `[opplan API] Downgraded stale objectives: ${stale.join(", ")} ` +
+          `(file untouched for ${Math.round((Date.now() - stat.mtimeMs) / 1000)}s)`
+        );
+      }
+    }
+
+    return NextResponse.json(data);
   } catch {
     // File not found or invalid — return empty
   }
