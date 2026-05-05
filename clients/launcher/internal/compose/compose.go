@@ -52,7 +52,7 @@ func (c *Compose) baseArgs() []string {
 
 // readVersion returns the installed version from $DECEPTICON_HOME/.version,
 // or an empty string if the file is missing or unreadable. The launcher
-// (install + auto-update) is the single writer; compose falls back to :latest
+// (install + explicit update) is the single writer; compose falls back to :latest
 // when the marker is absent.
 func (c *Compose) readVersion() string {
 	data, err := os.ReadFile(filepath.Join(c.Home, ".version"))

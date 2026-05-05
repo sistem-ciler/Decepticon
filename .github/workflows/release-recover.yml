@@ -7,6 +7,11 @@ on:
         description: "Release version without the leading v, e.g. 1.0.20"
         required: true
         type: string
+      promote_latest:
+        description: "Promote this version to :latest. Use false for pre-releases."
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -45,6 +50,7 @@ jobs:
           done
 
       - name: Promote :<version> to :latest
+        if: inputs.promote_latest
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -69,4 +75,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ inputs.version }}
-        run: gh release edit "v${VERSION}" --draft=false --prerelease=false
+        run: |
+          prerelease=false
+          if [[ "${VERSION}" == *-* ]]; then
+            prerelease=true
+          fi
+          gh release edit "v${VERSION}" --draft=false --prerelease="${prerelease}"

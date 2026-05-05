@@ -560,7 +560,7 @@ decepticon onboard --reset  # Re-run setup from scratch
 decepticon stop             # Stop all services, keep data
 decepticon status           # Show running services
 decepticon logs [service]   # Follow service logs
-decepticon update           # Check for and apply updates
+decepticon update           # Explicitly refresh config/images and upgrade when available
 decepticon remove           # Uninstall Decepticon completely
 decepticon --version        # Show installed version
 ```
