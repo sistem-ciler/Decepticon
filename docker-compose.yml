@@ -19,6 +19,8 @@ services:
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-decepticon-master}
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-sk-decepticon-salt}
+      - CHATGPT_TOKEN_DIR=/root/.config/litellm/chatgpt
+      - CHATGPT_AUTH_FILE=auth.json
       - DATABASE_URL=postgresql://decepticon:${POSTGRES_PASSWORD:-decepticon}@postgres:5432/litellm
     depends_on:
       postgres:
