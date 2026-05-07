@@ -21,6 +21,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ModelFallbackMiddleware
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
+from decepticon.agents._benchmark_mode import benchmark_skill_sources
 from decepticon.agents.prompts import load_prompt
 from decepticon.backends import DockerSandbox
 from decepticon.core.config import load_config
@@ -80,7 +81,10 @@ def create_recon_agent():
     # Assemble middleware stack
     middleware = [
         EngagementContextMiddleware(),
-        SkillsMiddleware(backend=backend, sources=["/skills/recon/", "/skills/shared/"]),
+        SkillsMiddleware(
+            backend=backend,
+            sources=["/skills/recon/", "/skills/shared/", *benchmark_skill_sources()],
+        ),
         FilesystemMiddleware(backend=backend),
         SandboxNotificationMiddleware(sandbox=sandbox),
     ]
@@ -125,7 +129,7 @@ def create_recon_agent():
         tools=tools,
         middleware=middleware,
         name="recon",
-    ).with_config({"recursion_limit": 400})
+    ).with_config({"recursion_limit": 1000})
 
     return agent
 

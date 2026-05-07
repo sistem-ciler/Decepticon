@@ -129,7 +129,7 @@ class TmuxSessionManager:
     def _docker_tmux(self, args: list[str], timeout: int = 10) -> str:
         """Run a tmux subcommand inside the container."""
         result = subprocess.run(
-            ["docker", "exec", self._container, "tmux"] + args,
+            ["docker", "exec", self._container, "tmux", "-L", self.session] + args,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -182,9 +182,12 @@ class TmuxSessionManager:
 
     def _clear_screen(self) -> None:
         target = self._target()
-        self._docker_tmux(["send-keys", "-t", target, "C-l"])
-        time.sleep(0.1)
-        self._docker_tmux(["clear-history", "-t", target])
+        try:
+            self._docker_tmux(["send-keys", "-t", target, "C-l"])
+            time.sleep(0.1)
+            self._docker_tmux(["clear-history", "-t", target])
+        except (TmuxCommandError, subprocess.TimeoutExpired, OSError) as e:
+            log.warning("_clear_screen failed for '%s': %s", target, e)
 
     def _capture(self) -> str:
         return self._docker_tmux(

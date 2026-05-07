@@ -69,6 +69,10 @@ class ChallengeResult(BaseModel):
     # cancel/teardown order races without scraping LangSmith.
     cancel_outcome: CancelOutcome | None = None
     terminal_status_at_teardown: str | None = None
+    # Setup overhead: time from run_challenge entry to LangGraph submit.
+    # Excludes agent execution — captures docker start + provider.setup() cost
+    # so duration_seconds reflects only agent wall-clock budget.
+    setup_seconds: float | None = None
 
 
 class BenchmarkReport(BaseModel):
@@ -96,5 +100,6 @@ class FilterConfig(BaseModel):
 
     levels: list[int] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    ids: list[str] = Field(default_factory=list)
     range_start: int | None = None
     range_end: int | None = None
