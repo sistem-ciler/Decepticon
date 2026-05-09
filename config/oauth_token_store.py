@@ -98,14 +98,25 @@ def write_json_atomic(
         log.warning("oauth_token_store: mkdir failed for %s: %s", path.parent, exc)
         return False
     tmp = path.with_name(f".{path.name}.decepticon.tmp")
+    payload = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+    open_flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        # POSIX: refuse to follow symlinks at the temp path. Closes a
+        # symlink-replacement TOCTOU window where a hostile process on the
+        # same UID could redirect the write to an attacker-owned file.
+        open_flags |= os.O_NOFOLLOW
+    fd: int | None = None
     try:
-        # lgtm[py/clear-text-storage-sensitive-data]
-        # See module docstring + function docstring above for rationale.
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        os.chmod(tmp, mode)
-        tmp.replace(path)
+        fd = os.open(tmp, open_flags, mode)
+        os.write(fd, payload)
     except OSError as exc:
         log.warning("oauth_token_store: write failed for %s: %s", path, exc)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                # Already closed or invalid descriptor — nothing actionable.
+                pass
         try:
             tmp.unlink()
         except OSError:
@@ -113,6 +124,16 @@ def write_json_atomic(
             # (concurrent reaper, tmpfs eviction) or sits on a read-only
             # mount, there's nothing actionable left to do — the outer
             # ``except`` already logged the originating write failure.
+            pass
+        return False
+    try:
+        os.close(fd)
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("oauth_token_store: replace failed for %s: %s", path, exc)
+        try:
+            tmp.unlink()
+        except OSError:
             pass
         return False
     return True
