@@ -15,6 +15,7 @@ import (
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/engagement"
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/health"
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/platform"
+	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/starprompt"
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/ui"
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/updater"
 	"github.com/spf13/cobra"
@@ -128,6 +129,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// current launcher rather than aborting the start.
 		ui.Warning("Update check: " + err.Error())
 	}
+
+	// 2.6. One-time GitHub star ask. Idempotent across launches — the
+	// ack file at $DECEPTICON_HOME/.starred suppresses the prompt
+	// after the user has been through it once. Silent no-op on
+	// non-interactive stdin, so CI / piped invocations are untouched.
+	starprompt.PromptIfNotStarred()
 
 	// 3. Engagement picker — must run BEFORE compose Up so the sandbox
 	// container starts with /workspace bound to the chosen engagement

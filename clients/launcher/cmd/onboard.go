@@ -8,6 +8,7 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/config"
+	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/starprompt"
 	"github.com/PurpleAILAB/Decepticon/clients/launcher/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -922,6 +923,13 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	fmt.Println(ui.Dim.Render("  │  ") + ui.Dim.Render(config.EnvPath()))
 	fmt.Println(ui.Dim.Render("  └──────────────────────────────────┘"))
 	fmt.Println()
+
+	// One-time GitHub star ask — the natural post-onboarding moment.
+	// Suppressed on subsequent runs by the ack file at
+	// $DECEPTICON_HOME/.starred, so a re-run of `decepticon onboard
+	// --reset` does not re-prompt.
+	starprompt.PromptIfNotStarred()
+
 	ui.DimText("  Run 'decepticon' to start the platform")
 	return nil
 }
