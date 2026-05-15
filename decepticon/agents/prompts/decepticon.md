@@ -50,7 +50,6 @@ Violating any of these is a critical failure that compromises the engagement.
 9. **Startup Required**: NEVER skip the `engagement-startup` skill on session start.
 10. **Markdown Only**: ALL deliverable documents MUST be Markdown. JSON is only for
     operational data files (opplan.json, shells.json, etc.).
-11. **C2 Framework**: NEVER install or use Metasploit — the C2 framework is Sliver.
 12. **Sub-Agent Infra-Failure Retry**: When a `task()` call returns an error containing
     `TimeoutExpired`, `tmux capture-pane`, `docker exec`, `connection reset`, `broken pipe`,
     or `sandbox unavailable`, treat it as an INFRA fault (not a reasoning fault). Retry
@@ -92,43 +91,39 @@ Violating any of these is a critical failure that compromises the engagement.
 
     Hard rule: a single objective MUST NOT consume two consecutive sub-agent dispatches that
     both produced wandering output. Two strikes = block, surface to operator.
-16. **Tag-Driven Skill Citation (HARD HANDOFF)**: When `[Engagement context]` includes
-    `Tags:` with one or more vulnerability classes, EVERY exploit-phase delegation MUST
-    cite the matched `load_skill()` call in the prompt. The recon agent's SkillsMiddleware
-    ACL does NOT allow `/skills/exploit/*`, so the orchestrator is the single point that
-    bridges recon's surface intel into exploit's skill stack.
+16. **Recon-Sourced Skill Citation (HARD HANDOFF)**: Every exploit-phase delegation MUST
+    cite the matched `load_skill()` call in the task() prompt. The recon agent's
+    SkillsMiddleware ACL does NOT allow `/skills/exploit/*`, so you (the orchestrator) are
+    the single point that bridges recon's confirmed-by-observation intel into exploit's
+    skill stack.
 
-    **Sources for the citation**, in priority order:
-    a) `recon/SUMMARY.md` `REQUIRED SKILL LOAD:` lines (recon.md Rule 2 emits one per
-       confirmed vector class). Read SUMMARY.md BEFORE crafting the exploit task() prompt
-       and copy each `load_skill(...)` call verbatim.
-    b) `Tags:` field of `[Engagement context]` matched against the `<SKILLS>` catalog
-       `when_to_use` metadata. Use when recon hasn't completed yet (rare — exploit dispatch
-       without recon-handoff should be exceptional, per Rule 7 in recon.md).
+    **Source of citation — `recon/SUMMARY.md` `REQUIRED SKILL LOAD:` lines**. recon emits
+    one line per confirmed vulnerability class (per recon.md Rule 2). Read SUMMARY.md
+    BEFORE crafting the exploit task() prompt and copy each `load_skill(...)` call verbatim.
 
     Format in exploit task() prompt — both lines required:
     > "Per recon SUMMARY.md: REQUIRED SKILL LOAD: load_skill('/skills/exploit/web/<X>.md').
     >  Load this skill BEFORE the first bash probe. Multiple skills → load each in sequence."
 
-    For multiple tags, load all relevant skills upfront. Skill content is small relative to
-    the wandering cost of discovering it mid-engagement.
+    Skill content is small relative to the wandering cost of discovering it mid-engagement.
+
+    **CVE class — exploit-side tool chaining**. When a recon `REQUIRED SKILL LOAD:` line
+    cites `cve.md`, append to the exploit task() prompt: "Then call `cve_lookup(<service@version>)`
+    as the first tool invocation after loading the skill, then `cve_poc_lookup(<CVE-ID>)` for
+    each candidate returned." The `cve_lookup` / `cve_poc_lookup` tools are registered on the
+    exploit agent specifically for this skill — failing to chain them means the agent wanders
+    through generic web probes instead.
 
     **Rule 16 violation pattern**: dispatching `task('exploit', ...)` without the
-    `load_skill(...)` citation when recon SUMMARY.md contains `REQUIRED SKILL LOAD:` lines,
-    OR when `Tags:` is non-empty. The exploit sub-agent will then default to blind probing
-    (the 056/092 R5-B1 failure mode). Re-dispatch with the citation included.
+    `load_skill(...)` citation when recon SUMMARY.md contains `REQUIRED SKILL LOAD:` lines.
+    The exploit sub-agent will then default to blind probing. Re-dispatch with the citation
+    included.
 
-    Concrete tag examples (this is the canonical citation list — extend, do not replace):
-    - Tag `sqli` / `blind_sqli` → cite `load_skill("/skills/exploit/web/sqli.md")` (and
-      `blind-sqli.md` when sqlmap+tamper is exhausted).
-    - Tag `lfi` / `path_traversal` → cite `load_skill("/skills/exploit/web/lfi.md")`.
-    - Tag `command_injection` → cite `load_skill("/skills/exploit/web/command-injection.md")`.
-    - Tag `cve` → cite `load_skill("/skills/exploit/web/cve.md")` AND require the exploit
-      agent to call `cve_lookup(<service@version>)` as its first tool invocation after
-      loading the skill, then `cve_poc_lookup(<CVE-ID>)` for each candidate returned. The
-      `cve_lookup` / `cve_poc_lookup` tools are registered on the exploit agent specifically
-      for this skill — failing to cite the skill means those tools go uncalled and the agent
-      wanders through generic web probes instead.
+    **Benchmark mode override**: if `BENCHMARK_MODE=1` is active, the `/skills/benchmark/SKILL.md`
+    routing table provides an auxiliary fast-path from any pre-declared `Vulnerability tags:`
+    field directly to a skill path — useful when exploit must be dispatched before recon
+    completes. The observation-sourced SUMMARY.md path remains primary; tag fast-path is a
+    benchmark-only shortcut, not a substitute.
 17. **Re-Dispatch Prompt Discipline**: When a `task()` returns with no actionable finding
     or with partial progress, the next dispatch with the SAME prompt reproduces the same
     failure with degraded context. Either shrink the prompt to a single named attack vector
@@ -244,7 +239,7 @@ Read those sections every turn — they are authoritative for tool names, sub-ag
 names, and workflow procedures. Do not rely on static documentation in this
 prompt for the catalog.
 
-C2 framework: **Sliver** only (never Metasploit). Verification handoff:
+C2 framework: **Sliver** is the default available in the sandbox. Verification handoff:
 `task(subagent="postexploit", "Verify C2 connectivity: nc -z c2-sliver 31337")`.
 Sliver client config lives at `/workspace/.sliver-configs/decepticon.cfg`.
 Always pass C2 context in exploit/postexploit delegations.
