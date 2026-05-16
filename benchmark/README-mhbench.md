@@ -230,10 +230,89 @@ Per-challenge, the provider does the following — no operator intervention:
   owns project quotas during setup; running `--parallel >1` against the
   same tenant will collide. Run sequentially or use separate tenants
   per worker.
-- **End-to-end against a live tenant is not yet verified.** PR 1 ships
-  code-only changes. The first real run will likely surface tenant- and
-  network-specific issues (flavor naming variance, security-group rules,
-  floating-IP allocation timing) that will be fixed in follow-up PRs.
+- **End-to-end attack run against a live tenant is not yet verified.**
+  PR 1 ships code-only changes plus the partial live-dogfood findings
+  below. Full benchmark scoring still needs an operator running on a
+  Kolla-Ansible cluster.
+
+## Live dogfood findings (2026-05-17)
+
+PR 1 was exercised on a GCP `n2-standard-8` VM (Seoul, Ubuntu 24.04,
+nested-KVM enabled) against two OpenStack setups. Both surfaced
+adaptation gaps between upstream MHBench's `setup_kolla.sh` assumptions
+and what a single-node OpenStack actually delivers. Capture for the
+next operator:
+
+### What did work
+- VM bring-up with nested virtualization on `n2-standard-8` (~`/dev/kvm`
+  present, 16 `vmx` flags) — sufficient for Chain2Hosts (1 attacker +
+  2 ring hosts). Cost: ~$0.78/hr.
+- DevStack 2026.2 single-node install in **~14 min** (much faster than
+  the upstream "30-60 min" estimate) on this hardware.
+- `MHBenchProvider.setup` shell-out path: `uv run python main.py …
+  setup`, `uv run ansible-playbook ansible/goals/addFlag.yml` all
+  invoke cleanly when run from `benchmark/MHBench/` cwd.
+- OpenStack admin operations from the host: `openstack project create
+  perry`, `openstack flavor create p2.tiny --disk 30`,
+  `openstack image create Ubuntu20 --file …`, `openstack image create
+  Kali --file …`, `openstack keypair create --public-key … perry_key`.
+- VM provisioning end-to-end: terraform deployed the attacker + ring
+  hosts; OpenStack assigned floating IPs; `ssh -i ~/perry_key
+  root@<floating-ip>` reached the attacker host (returned the cloud
+  banner "Please login as the user 'ubuntu' rather than the user
+  'root'").
+
+### What needed adaptation
+- **`p2.tiny` and `m1.small` disk too small for stock cloud images.**
+  Kali 2026.1 generic-cloud has `virtual_size: 25 GiB`. Upstream
+  `setup_kolla.sh` ships `p2.tiny --disk 5` and `m1.small --disk 20`,
+  both reject the image. Workaround: recreate flavors with `--disk 30`
+  (or shrink the Kali rootfs to fit upstream defaults).
+- **`Ubuntu20.img` and `kali.qcow2` filenames must match upstream
+  `setup_kolla.sh` exactly** — those literals are baked into terraform
+  `image_name` lookups.
+- **Kali URL drift.** Upstream `install_attacker.sh` references
+  `kali-linux-2025.3-cloud-genericcloud-amd64.tar.xz`; the working URL
+  as of 2026-05-17 is
+  `https://kali.download/cloud-images/current/kali-linux-2026.1-cloud-genericcloud-amd64.tar.xz`.
+  After download, `tar -xf` yields `disk.raw`; convert with
+  `qemu-img convert -O qcow2 -c disk.raw kali.qcow2` for compact
+  upload (845 MB raw → 307 MB qcow2).
+
+### What was blocked
+- **DevStack uses OVN networking by default on Ubuntu 24.04** —
+  tenant network IPs (`192.168.202.0/24` in Chain2Hosts) are unreachable
+  from the host without going through the OVN namespace, while
+  MHBench's ansible plays connect to the tenant IP directly. Upstream
+  assumes a Kolla-Ansible deployment with Linux-bridge / OVS-classic
+  provider networks where the host has L3 reachability to the tenant
+  range.
+- **Kolla-Ansible AIO single-node deploy failed at MariaDB port
+  liveness.** `enable_haproxy: "no"` in `globals.yml` did not prevent
+  Kolla from deploying `proxysql`, which then bound `10.178.0.4:3306`
+  and presented a non-`MariaDB` banner. The ansible task
+  `Wait for first MariaDB service port liveness` timed out after 10
+  retries with `"Timeout when waiting for search string MariaDB in
+  10.178.0.4:3306"`. Single-NIC AIO + proxysql is a known sharp edge
+  for Kolla; multi-node with a dedicated `kolla_internal_vip_address`
+  on a free interface avoids it.
+- **The ssh user mismatch on stock cloud images** — Ubuntu cloud =
+  `ubuntu`, Kali cloud = `kali` — versus MHBench's ansible playbooks
+  which `become_user: root`. Upstream's setup uses custom images with
+  root login enabled. Either bake a custom image or patch the playbooks
+  to `become_user: ubuntu` + `sudo`.
+
+### Recommended infrastructure for next operator
+- **Kolla-Ansible multi-node cluster** (3+ servers, dedicated NICs for
+  management vs external/provider) following the upstream
+  `setup_kolla.sh` exactly. This is what the Singer et al. paper's
+  authors ran against.
+- **Pre-baked custom Ubuntu 20 + Kali images** with root SSH enabled
+  and `cloud-init` shaped to MHBench's expectations.
+- Single-node DevStack and Kolla AIO are not blocked, but each requires
+  a stack of adaptations (custom flavors, network namespace routes,
+  ansible user overrides) that erode the "use upstream as-is" property
+  this PR was designed around.
 
 ## Roadmap
 
