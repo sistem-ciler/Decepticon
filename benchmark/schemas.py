@@ -46,6 +46,10 @@ class Challenge(BaseModel):
     docker_image: str | None = None
     mcp_interface: str | None = None
     seed: int | None = None
+    # MHBench provider only: name of the topology spec class
+    # (``Chain2Hosts``, ``EquifaxSmall``, …) or a generated topology JSON
+    # file name. Passed verbatim to upstream ``main.py --type``.
+    mhbench_env_type: str | None = None
 
     @property
     def flag_pattern(self) -> re.Pattern[str]:
