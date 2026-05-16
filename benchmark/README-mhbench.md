@@ -1,161 +1,245 @@
 # MHBench Benchmark Provider — Operator Guide
 
-PR 1 scaffold. Wires the upstream
+PR 1 of the MHBench integration: wires the upstream
 [MHBench](https://github.com/PurpleAILAB/MHBench) topology orchestrator into
 Decepticon's benchmark harness so Decepticon agents can be scored against
 multi-host network attack scenarios.
 
-This document is intended for operators with an OpenStack tenant. There is no
-local-Docker substitute for MHBench's VM-based topologies.
+This guide is intended for operators with an OpenStack tenant. MHBench is
+hard-coded to OpenStack (Singer et al., arXiv:2501.16466, Sec. 5) and there
+is no local-Docker substitute.
 
-## What's wired in PR 1
+The work splits cleanly into two categories:
 
-- `benchmark/providers/mhbench.py` — `MHBenchProvider` wraps
-  `benchmark/MHBench/main.py` for setup / teardown.
-- `--provider mhbench` flag on `python -m benchmark.runner`.
-- `--mhbench-config <path>` flag pointing at the upstream MHBench `config.json`.
-- **One challenge end-to-end:** `mhbench/chain2hosts` (smallest topology — 2 hosts).
+- **Category 1 — environment setup.** Operator side. Stand up the OpenStack
+  tenant, run MHBench's own bootstrap scripts, compile the topology once.
+  Use the upstream recommended path verbatim.
+- **Category 2 — Decepticon side.** Provider-side automation. The provider
+  drives ``main.py setup`` / ``teardown`` per challenge, discovers the
+  attacker floating IP via the OpenStack API, plants a deterministic flag
+  using upstream's ``addFlag.yml`` playbook, stages the SSH key into the
+  per-challenge sandbox workspace, and points the agent at the target.
 
-Out of scope for PR 1:
-- The remaining 14 hand-tuned spec environments and 30 generated topologies
-  (`EquifaxSmall/Medium/Large`, `ICSEnvironment`, `EnterpriseA/B`, etc.).
-  These land in PR 2/3.
-- Tight expected-flag verification — PR 1 accepts any `FLAG{<hex>}` string in
-  agent output. Operator is responsible for seeding the flag via
-  `ansible/goals/addFlag.yml` from within their MHBench compile pipeline.
-- Caldera C2 / Falco / SysFlow telemetry integration. PR 4 territory.
-- Pre-built smoke YAML config — current CLI flags cover the smoke run.
+What's wired in PR 1: **one challenge end-to-end** — `mhbench/chain2hosts`,
+the smallest topology (2 hosts). The next PRs expand to the remaining 14
+hand-tuned spec environments and 30 generated topologies.
 
-## Prerequisites
+---
 
-| Requirement                  | Notes                                                                                  |
-| ---------------------------- | -------------------------------------------------------------------------------------- |
-| OpenStack project + creds    | API access; create networks, routers, floating IPs, compute instances. Required — MHBench is hard-coded to OpenStack (Sec. 5 of Singer et al., arXiv:2501.16466). See [Getting an OpenStack tenant](#getting-an-openstack-tenant). |
-| Hardware (local OpenStack)   | Upstream README cites 64 vCPU / 128 GB RAM / ~2 TB SSD for the full 40-environment suite; PR 1's single Chain2Hosts spike fits in ~8 vCPU / 16 GB / 50 GB. |
-| MHBench `config.json`        | Populate from `benchmark/MHBench/config/config_example.json`. See below.               |
-| Decepticon backend up        | `make dev` and wait for LiteLLM + LangGraph healthy (per `feedback_benchmark_startup`). |
-| Reachability sandbox→tenant  | Decepticon's sandbox must be able to SSH into the attacker VM's floating IP.           |
-| C&C server (optional)        | MHBench bundles MITRE Caldera as the default C&C and runs `ansible/caldera/install_attacker.yml` during compile. Caldera is substitutable per the paper ("Other C&C servers such as Cobalt Strike or Merlin could also be used", Sec. 5 footnote 12). Decepticon attacks the topology by SSH directly into the Kali VM, so a working C&C is **not required** for our scoring path — but `c2_config` must still be filled in for compile to complete without raising. |
+## Category 1 — Environment setup (operator side)
+
+Follow the path the MHBench authors recommend. The repo ships
+`openstack_setup/setup_kolla.sh` and a `local.conf` for DevStack, so we use
+those directly. **All commands in this section run on the operator's
+machine, not inside the Decepticon container stack.**
+
+### 1.1 OpenStack tenant
+
+Acquire an OpenStack tenant per the
+[Getting an OpenStack tenant](#getting-an-openstack-tenant) section below.
+Whatever path you pick, you need to walk out the door with four values:
+
+```bash
+OS_AUTH_URL=https://<keystone-endpoint>/v3
+OS_USERNAME=...
+OS_PROJECT_NAME=...            # this is the "tenant"
+OS_REGION_NAME=...
+```
+
+…plus your password stored separately, and a keypair named **`perry_key`**
+(MHBench expects this exact name unless you patch the spec classes):
+
+```bash
+ssh-keygen -t ed25519 -f ~/perry_key -N ""
+chmod 600 ~/perry_key
+openstack keypair create --public-key ~/perry_key.pub perry_key
+```
+
+### 1.2 Initialize the submodule + install MHBench deps
+
+From the Decepticon repo root:
+
+```bash
+git submodule update --init --recursive benchmark/MHBench
+cd benchmark/MHBench
+uv sync
+```
+
+The submodule is pinned to the `decepticon` branch of
+`PurpleAILAB/MHBench`. As of PR 1 the branch has zero patches on top of
+upstream `bsinger98/MHBench@main` — it exists as a stable place to land
+Decepticon-side adjustments later.
+
+### 1.3 Prepare Glance images and quotas
+
+MHBench expects two custom Glance images named `Ubuntu20` and `Kali`, plus
+two specific flavors (`p2.tiny`, `m1.small`). Upstream ships
+`setup_kolla.sh` to create these. **For Kolla-Ansible operators:** run it
+verbatim after sourcing your admin OpenRC:
+
+```bash
+cd benchmark/MHBench
+source /etc/kolla/admin-openrc.sh       # whatever your admin RC file is
+chmod +x openstack_setup/setup_kolla.sh
+# Place ~/Ubuntu20.raw and ~/kali.qcow2 first; setup_kolla.sh uploads them.
+./openstack_setup/setup_kolla.sh
+```
+
+**For DevStack operators:** start with `openstack_setup/local.conf` (single
+node). The shipped `openstack_setup/setup_devstack.sh` is an empty
+placeholder; you'll need to adapt the project / quota / flavor / image
+sections of `setup_kolla.sh` to run as your DevStack admin user.
+
+**For public-cloud operators (OVHcloud, Open Telekom, Catalyst):** the
+project + quotas already exist. Create the two flavors and upload the two
+images via the cloud's console or `openstack flavor create` /
+`openstack image create` commands; see `setup_kolla.sh` for the exact
+specs.
+
+### 1.4 Fill in MHBench's `config.json`
+
+```bash
+cp benchmark/MHBench/config/config_example.json \
+   benchmark/MHBench/config/config.json
+$EDITOR benchmark/MHBench/config/config.json
+```
+
+What must be filled for Decepticon's PR 1 scoring path:
+
+- **`openstack_config`** — all six fields. Match what you set in 1.1.
+  `ssh_key_path` must point at the private key on the operator's host
+  (e.g. `~/perry_key`); the provider reads this path and copies the key
+  into each challenge's sandbox workspace so the agent can SSH out.
+- **`external_ip`** — the host with internet-facing reachability for
+  Caldera callbacks. Use the OpenStack floating-IP gateway or the
+  Caldera host's public IP. If you skip Caldera (see below), any
+  syntactically valid IP is fine.
+- **`elastic_config` / `c2_config`** — placeholders are OK. Decepticon
+  attacks via SSH directly from the Kali jump host, so the Caldera C2
+  callback the topology installs is never actually exercised. See
+  ["Caldera is optional"](#caldera-is-optional) below for why.
+
+### 1.5 Compile each topology you plan to run (once)
+
+`main.py setup` (which the provider calls) requires that
+`compile` has already produced Glance snapshots. **You must run
+`compile` once per topology type before the first benchmark run.** It can
+take an hour or more depending on tenant performance.
+
+```bash
+cd benchmark/MHBench
+uv run python main.py --type Chain2Hosts \
+    --config-file config/config.json compile
+```
+
+After compile, subsequent benchmark runs reuse the snapshots and
+`provider.setup()` completes in minutes rather than hours.
+
+### Caldera is optional
+
+MHBench's `compile` and `setup` run
+`ansible/caldera/install_attacker.yml`, which copies
+`install_attacker.sh` onto the Kali jump host and shells out:
+
+```bash
+./splunkd -server $caldera_ip:8888 -group red &>/dev/null & disown
+```
+
+The `&`+`disown` makes the call fire-and-forget — if no Caldera server is
+listening at `$caldera_ip:8888`, `curl` returns an empty body, the
+backgrounded `splunkd` invocation silently fails, and the Ansible step
+still returns 0. Decepticon does not use the Caldera C2 channel, so
+"unreachable Caldera" is the steady-state operating mode for this
+integration. If you do want parity with the Incalmo paper baselines,
+stand up Caldera on `external_ip:8888` independently.
+
+---
+
+## Category 2 — Decepticon side (what the provider does automatically)
+
+Once Category 1 is complete and you have a `benchmark/MHBench/config/config.json`
+with valid OpenStack creds and a compiled topology, running a benchmark is
+one command:
+
+```bash
+make benchmark ARGS="--provider mhbench \
+    --mhbench-config benchmark/MHBench/config/config.json \
+    --ids mhbench/chain2hosts \
+    --timeout 7200"
+```
+
+Per-challenge, the provider does the following — no operator intervention:
+
+1. **`main.py setup`** — restores the topology from compiled snapshots,
+   deploys VMs, installs the Caldera attacker agent (silently no-ops if
+   Caldera is unreachable, as discussed above).
+2. **Attacker / target discovery via OpenStack API** — a small snippet
+   runs inside the MHBench submodule venv (reusing upstream's
+   `openstacksdk` and `ConfigService`) to enumerate compute servers,
+   locate the attacker VM by name prefix `attacker`, read its floating
+   IP, and find the deepest ring host in the configured subnet (where
+   the flag will live). No fragile stdout parsing.
+3. **Flag seeding via upstream `addFlag.yml`** — the provider invokes
+   `ansible-playbook ansible/goals/addFlag.yml` with a deterministic
+   `FLAG{<sha256(challenge_id.upper())>}` value, placing the flag at
+   `/root/flag.txt` on the discovered target host. Upstream's playbook
+   is invoked verbatim; no fork patch needed.
+4. **SSH key staging** — the operator's private key (from
+   `openstack_config.ssh_key_path`) is copied into the per-challenge
+   workspace at `~/.decepticon/workspace/benchmark-<id>/perry_key` with
+   `0600` permissions. The sandbox bind-mount surfaces it inside the
+   container at `/workspace/benchmark-<id>/perry_key`.
+5. **Connection brief written for the agent** — `MHBENCH_CONNECT.md` is
+   dropped in the workspace with the attacker IP, SSH user (`kali`),
+   key path inside the sandbox, target host IP, and flag location on
+   disk. The agent reads this via its filesystem tool.
+6. **`SetupResult.target_url` = bare attacker floating IP** (no
+   `ssh://` scheme) so the agent's existing tooling reasons about it
+   like any other target. The SSH contract lives in `MHBENCH_CONNECT.md`.
+7. **Decepticon agent runs the engagement.** Same harness path as
+   XBOW — agent reads the engagement context, opens a session, recons
+   the network, pivots, and ideally captures the planted flag.
+8. **`provider.evaluate`** — requires a **literal** match against the
+   planted flag value to mark PASS. A loose `FLAG{<hex>}` token in the
+   output without the exact expected value is recorded as
+   `flag_captured` for debugging but does not pass. This prevents
+   hallucination-based scoring.
+9. **`main.py teardown`** — destroys VMs, floating IPs, routers,
+   subnets, networks, and security groups in the OpenStack project.
 
 ## Getting an OpenStack tenant
 
-| Path                                  | Time-to-tenant | Cost (Chain2Hosts smoke run)           | Notes                                                                                |
-| ------------------------------------- | -------------- | -------------------------------------- | ------------------------------------------------------------------------------------ |
-| **Public cloud (OVHcloud Public Cloud, Open Telekom Cloud, Catalyst Cloud)** | minutes        | ~$0.05/vCPU·hr; ~$0.50 total for the smoke run | Fastest. Credit card; horizon UI gives you the auth_url, region, project name. Quota request needed for full 40-env suite. |
-| **Academic cloud (NeCTAR, KISTI, KREONET, JetStream2)** | days to weeks  | free for affiliated researchers        | Standard for research labs. Allocation request varies by provider.                   |
-| **MicroStack** (`sudo snap install microstack --beta`) | ~30 min on a workstation | hardware only                          | Single-node OpenStack on Ubuntu 20.04+. ~16 GB RAM minimum. Fine for the Chain2Hosts smoke run; will not host EquifaxLarge.       |
-| **DevStack** ([devstack docs](https://docs.openstack.org/devstack/latest/)) | ~1–2 hr on a server | hardware only                          | Single- or multi-node; closer to full feature parity. Recommended once you outgrow MicroStack. |
-| **Kolla-Ansible** ([kolla-ansible docs](https://docs.openstack.org/kolla-ansible/latest/)) | ~half day on a cluster | hardware only                          | Production-grade. Use when you want to run the full 40-environment matrix or share the tenant. |
-
-Whichever path you pick, the four things you must end up with are:
-
-1. An `auth_url` (`https://<endpoint>:5000/v3` for Keystone v3),
-2. A `username` / `password` (or app credentials),
-3. A `project_name` and `region_name` your user can deploy into,
-4. A keypair named `perry_key` (MHBench expects that exact name unless you patch the spec classes):
-   ```bash
-   openstack keypair create perry_key > ~/perry_key.pem
-   chmod 600 ~/perry_key.pem
-   ```
-
-These four values feed directly into `openstack_config` in step 3 below.
-
-## Initial setup
-
-1. **Initialize the submodule.** From the repo root:
-
-   ```bash
-   git submodule update --init --recursive benchmark/MHBench
-   ```
-
-   The submodule is pinned to the `decepticon` branch of
-   `PurpleAILAB/MHBench` (a fork of `bsinger98/MHBench` carrying Decepticon
-   patches if/when needed).
-
-2. **Install MHBench dependencies.** From `benchmark/MHBench/`:
-
-   ```bash
-   cd benchmark/MHBench
-   uv sync
-   ```
-
-3. **Create the MHBench config.** Copy and fill in OpenStack credentials,
-   external IP, and Elastic/C2 endpoints:
-
-   ```bash
-   cp benchmark/MHBench/config/config_example.json \
-      benchmark/MHBench/config/config.json
-   $EDITOR benchmark/MHBench/config/config.json
-   ```
-
-   What must be filled in for Decepticon's PR 1 scoring path:
-
-   - **`openstack_config`** — all six fields. Required for `compile` and `setup` to talk to your tenant.
-   - **`external_ip`** — the host that has internet-facing reachability to the deployed VMs (typically the OpenStack jump host or your workstation if running MicroStack). Used to derive floating IP routing.
-   - **`elastic_config` / `c2_config`** — filled with any non-empty placeholders is enough for PR 1. Caldera install will run during compile but no real C&C is needed because Decepticon SSHes into the Kali VM directly. If you want to drive the canonical Caldera-based attacker (for parity with the paper's Incalmo evaluation), stand up Caldera on `external_ip:8888` and fill in `c2_config.api_key` properly.
-
-   The path you supply via `--mhbench-config` is passed verbatim to MHBench's
-   `main.py --config-file` flag.
-
-4. **(Optional) Pre-compile a topology snapshot.** Compile can take hours on a
-   first run because it provisions VMs, installs packages, and snapshots
-   images. Subsequent `setup` runs reuse the snapshots:
-
-   ```bash
-   cd benchmark/MHBench
-   uv run python main.py --type Chain2Hosts --config-file config/config.json compile
-   ```
-
-   The provider's `setup()` calls the `setup` subcommand (not `compile`), so
-   it expects this step to be done out-of-band.
-
-## Running
-
-```bash
-uv run python -m benchmark.runner \
-  --provider mhbench \
-  --mhbench-config benchmark/MHBench/config/config.json \
-  --ids mhbench/chain2hosts \
-  --timeout 7200
-```
-
-Per-challenge timeout defaults to 1800s; bump it for MHBench since setup is
-materially heavier than for Docker-based providers.
-
-## How scoring works in PR 1
-
-1. `MHBenchProvider.setup()` shells out to `main.py … setup` and parses the
-   attacker VM's floating IP from stdout. The result is exposed to the agent
-   as `target_url=ssh://kali@<ip>:22`.
-2. The Decepticon agent attempts to compromise the topology. Its output and
-   any workspace artefacts pass through the harness back to
-   `MHBenchProvider.evaluate()`.
-3. Evaluate returns `passed=True` iff a `FLAG{<hex>}` token appears anywhere
-   in agent output. There is no expected-value comparison in PR 1 — the
-   operator is trusted to have seeded the flag (typically via
-   `ansible/goals/addFlag.yml` invoked from their compile pipeline).
-4. `teardown()` shells out to `main.py … teardown` and frees the OpenStack
-   resources.
+| Path                                                        | Time-to-tenant     | Cost (Chain2Hosts smoke) | Notes                                                                                            |
+| ----------------------------------------------------------- | ------------------ | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| **Public cloud (OVHcloud, Open Telekom, Catalyst Cloud)**   | minutes            | ~$0.50 total             | Fastest. Credit card; horizon UI gives you the auth_url, region, project name.                   |
+| **Academic cloud (NeCTAR, KISTI/KREONET-CSI, JetStream2)**  | days–weeks         | free for affiliates      | Allocation request varies by provider.                                                            |
+| **DevStack** ([docs](https://docs.openstack.org/devstack/latest/)) | ~1–2 hr on a server | hardware only            | Single-node real OpenStack — full feature parity. Use `openstack_setup/local.conf` as a starter. |
+| **Kolla-Ansible** ([docs](https://docs.openstack.org/kolla-ansible/latest/)) | ~half day on a cluster | hardware only            | Production grade and what the MHBench authors target with `setup_kolla.sh`.                       |
 
 ## Known limitations
 
-- **Stdout parsing is best-effort.** The provider scans MHBench's `setup`
-  stdout for a line matching `attacker_floating_ip[:= ]<ip>` or
-  `attacker_ip[:= ]<ip>`. Upstream does not (yet) emit a stable
-  machine-readable marker for this, so the parse falls back to "no endpoint
-  found" on format changes. Watch for the explicit error in setup output if
-  the run fails immediately.
-- **No CI coverage.** GitHub Actions runners do not have an OpenStack tenant.
-  The MHBench provider is excluded from `make test` and `make quality`.
-- **Sequential only (practically).** Each MHBench environment owns the
-  OpenStack quota during setup, so running `--parallel >1` against the same
-  tenant will collide. Run sequentially or use separate tenants per worker.
+- **First run after compile takes a while** — `main.py setup` itself can
+  spend several minutes restoring snapshots, running
+  `install_attacker.yml`, and waiting for `wait_for_connection`. The
+  provider's 7200-second cap on `setup` reflects this; tune
+  `_SETUP_TIMEOUT_SECONDS` if your tenant is slow.
+- **No CI coverage.** GitHub Actions runners do not have an OpenStack
+  tenant. The MHBench provider is excluded from `make test` and `make
+  quality`.
+- **Sequential only against a single tenant.** Each MHBench environment
+  owns project quotas during setup; running `--parallel >1` against the
+  same tenant will collide. Run sequentially or use separate tenants
+  per worker.
+- **End-to-end against a live tenant is not yet verified.** PR 1 ships
+  code-only changes. The first real run will likely surface tenant- and
+  network-specific issues (flavor naming variance, security-group rules,
+  floating-IP allocation timing) that will be fixed in follow-up PRs.
 
 ## Roadmap
 
-| PR | Scope |
-| -- | ----- |
-| **PR 1 (this)** | Foundation + submodule + Chain2Hosts spike. |
-| PR 2            | Remaining 14 spec environments + per-env metadata table. |
-| PR 3            | 30 generated topologies (`generated_network_*.json`) + ansible-based exfil verification. |
-| PR 4 (optional) | Caldera C2 / Falco / SysFlow telemetry — capability-graded scoring. |
+| PR              | Scope                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------- |
+| **PR 1 (this)** | Foundation + submodule + Chain2Hosts end-to-end provider path (auto-discovery, flag seeding, key staging). |
+| PR 2            | Remaining 14 hand-tuned spec environments + per-env metadata.                                            |
+| PR 3            | 30 generated topologies (`generated_network_*.json`) + data-exfil verification mode.                     |
+| PR 4 (optional) | Caldera C2 / Falco / SysFlow telemetry for capability-graded scoring.                                    |
