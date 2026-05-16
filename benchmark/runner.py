@@ -9,7 +9,9 @@ import typer
 
 from benchmark.config import BenchmarkConfig
 from benchmark.harness import Harness
+from benchmark.providers.base import BaseBenchmarkProvider
 from benchmark.providers.exploitbench import ExploitBenchProvider
+from benchmark.providers.mhbench import MHBenchProvider
 from benchmark.providers.xbow import XBOWProvider
 from benchmark.reporter import Reporter
 from benchmark.schemas import Challenge, ChallengeResult, FilterConfig
@@ -17,10 +19,30 @@ from benchmark.scorer import Scorer
 
 # --provider literal — extend here when adding new providers. Kept narrow
 # so a typo on the CLI fails loudly instead of falling back to xbow.
-_PROVIDER_CHOICES = ("xbow", "exploitbench")
+_PROVIDER_CHOICES = ("xbow", "exploitbench", "mhbench")
 
 log = logging.getLogger(__name__)
 app = typer.Typer(name="benchmark", help="Decepticon Benchmark Runner")
+
+
+def _build_provider(config: BenchmarkConfig) -> BaseBenchmarkProvider:
+    """Return the provider implementation matching ``config.provider``."""
+    if config.provider == "xbow":
+        return XBOWProvider()
+    if config.provider == "exploitbench":
+        if config.exploitbench_config_path is None:
+            raise typer.BadParameter(
+                "--exploitbench-config is required when --provider exploitbench"
+            )
+        return ExploitBenchProvider(
+            spec_path=config.exploitbench_config_path,
+            bridge_runtime=config.exploitbench_bridge_runtime,
+        )
+    if config.provider == "mhbench":
+        return MHBenchProvider(config_path=config.mhbench_config_path)
+    raise typer.BadParameter(
+        f"Unknown provider {config.provider!r}; expected one of {_PROVIDER_CHOICES}"
+    )
 
 
 @app.command()
@@ -54,6 +76,11 @@ def run(
         "--exploitbench-bridge",
         help="Bridge runtime for stdio→TCP MCP exposure: mcp-proxy or socat",
     ),
+    mhbench_config: Path | None = typer.Option(
+        None,
+        "--mhbench-config",
+        help="Path to MHBench config.json (required when --provider mhbench)",
+    ),
 ) -> None:
     """Run the benchmark suite against loaded challenges."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -78,6 +105,7 @@ def run(
         provider=provider_name,
         exploitbench_config_path=exploitbench_config,
         exploitbench_bridge_runtime=exploitbench_bridge,
+        mhbench_config_path=mhbench_config,
     )
 
     provider = _build_provider(config)
@@ -91,10 +119,10 @@ def run(
     typer.echo(f"Found {len(challenges)} challenges ({mode}, provider={provider.name})")
 
     # Pre-build is XBOW-specific (its provider knows how to drive `make build`
-    # against an in-tree benchmark directory). The ExploitBench provider pulls
-    # images on-demand inside ``setup`` instead, so we only fire preflight for
-    # the provider that actually implements it. ``isinstance`` over a
-    # ``hasattr`` probe keeps basedpyright's attribute narrowing accurate.
+    # against an in-tree benchmark directory). ExploitBench pulls images
+    # on-demand inside ``setup``; MHBench delegates compile to its own CLI.
+    # ``isinstance`` over a ``hasattr`` probe keeps basedpyright's attribute
+    # narrowing accurate.
     if isinstance(provider, XBOWProvider):
         typer.echo("Pre-building challenge images...")
         build_failures = provider.preflight_build(challenges)
@@ -142,22 +170,6 @@ def run(
 
     if report.failed > 0:
         raise typer.Exit(code=1)
-
-
-def _build_provider(config: BenchmarkConfig):
-    """Return the provider implementation matching ``config.provider``."""
-    if config.provider == "xbow":
-        return XBOWProvider()
-    if config.provider == "exploitbench":
-        if config.exploitbench_config_path is None:
-            raise typer.BadParameter(
-                "--exploitbench-config is required when --provider exploitbench"
-            )
-        return ExploitBenchProvider(
-            spec_path=config.exploitbench_config_path,
-            bridge_runtime=config.exploitbench_bridge_runtime,
-        )
-    raise typer.BadParameter(f"Unknown provider: {config.provider}")
 
 
 def _run_sequential(

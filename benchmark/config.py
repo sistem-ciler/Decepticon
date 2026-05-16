@@ -42,3 +42,7 @@ class BenchmarkConfig(BaseModel):
     # (``mcp-proxy`` default, ``socat`` fallback for hosts without Node).
     exploitbench_config_path: Path | None = None
     exploitbench_bridge_runtime: str = "mcp-proxy"
+    # MHBench provider only: absolute or repo-relative path to the upstream
+    # MHBench ``config.json`` carrying OpenStack credentials, external_ip,
+    # and Elastic/C2 settings. Required when ``provider == "mhbench"``.
+    mhbench_config_path: Path | None = None
