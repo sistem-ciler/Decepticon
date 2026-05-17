@@ -48,6 +48,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=sandbox-apt-cache
         exploitdb \
         dirb \
         gobuster \
+        # SSH client + sshpass for lateral movement / multi-host scenarios
+        # (e.g., MHBench OpenStack topologies — attacker pivots through a
+        # jump host via ProxyJump to reach internal ring hosts).
+        openssh-client \
+        sshpass \
         # ── JavaScript runtime (JSFuck payload encoding/validation) ──
         nodejs \
         npm \
