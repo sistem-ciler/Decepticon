@@ -199,6 +199,9 @@ lint-fix:
 	uv run ruff format .
 
 quality-cli: node-install
+	# streaming workspace must be built first — its package.json main
+	# resolves to dist/, which cli's typecheck + build consume.
+	npm run build --workspace=@decepticon/streaming
 	npm run typecheck --workspace=@decepticon/cli
 	npm run build --workspace=@decepticon/cli
 	npm run test --workspace=@decepticon/cli
