@@ -12,7 +12,14 @@ Phase 1.A status: ``types`` submodule extracted from the framework
 
 from __future__ import annotations
 
-from decepticon_core import contracts, plugin_loader, protocols, types, utils
+from decepticon_core import (
+    contracts,
+    plugin_loader,
+    protocols,
+    registry,
+    types,
+    utils,
+)
 
 __version__ = "0.0.0"
 
@@ -21,6 +28,7 @@ __all__ = [
     "contracts",
     "plugin_loader",
     "protocols",
+    "registry",
     "types",
     "utils",
 ]
