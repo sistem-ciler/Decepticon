@@ -4,28 +4,27 @@ Get Decepticon running in minutes with Docker Compose.
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) (20.10+)
-- [Docker Compose](https://docs.docker.com/compose/install/) (v2.22+)
+- [Docker](https://docs.docker.com/get-docker/) (20.10+) with Compose v2
 - 8GB+ RAM available for Docker
 - At least one LLM API key (Anthropic, OpenAI, etc.) or Ollama for local LLM
 
-## Quick Start
+## Quick Start — Fresh VPS (Ubuntu/Debian)
+
+One-command install on a fresh VPS:
 
 ```bash
-# Clone the repository
-git clone https://github.com/PurpleAILAB/Decepticon.git
-cd Decepticon
-
-# Start everything (builds images on first run)
-./start.sh
+curl -fsSL https://raw.githubusercontent.com/sistem-ciler/Decepticon/main/scripts/vps-setup.sh | bash
 ```
 
-That's it. The script will:
-1. Check Docker is installed and running
-2. Create a `.env` file with defaults
-3. Build all Docker images
-4. Start all services with health checks
-5. Print the URLs
+This installs Docker, configures the firewall, clones the repo, builds images, and starts all services.
+
+## Quick Start — Manual
+
+```bash
+git clone https://github.com/sistem-ciler/Decepticon.git
+cd Decepticon
+./start.sh
+```
 
 ## Access
 
@@ -51,23 +50,13 @@ Default Neo4j credentials: `neo4j` / `decepticon-graph`
 
 ## Manual Docker Compose
 
-If you prefer running Docker Compose directly:
-
 ```bash
-# Copy and edit environment
 cp .env.example .env
 # Edit .env to add your LLM API keys
 
-# Build and start
 docker compose -f docker-compose.quickstart.yml up --build -d
-
-# Check status
 docker compose -f docker-compose.quickstart.yml ps
-
-# View logs
 docker compose -f docker-compose.quickstart.yml logs -f
-
-# Stop
 docker compose -f docker-compose.quickstart.yml down
 ```
 
@@ -110,9 +99,14 @@ Edit `.env` to configure:
 
 ## Troubleshooting
 
+**Docker daemon not running?**
+```bash
+sudo systemctl start docker
+sudo systemctl enable docker
+```
+
 **Services not starting?**
 ```bash
-# Check logs for a specific service
 docker compose -f docker-compose.quickstart.yml logs langgraph
 docker compose -f docker-compose.quickstart.yml logs web
 docker compose -f docker-compose.quickstart.yml logs litellm
@@ -122,12 +116,12 @@ docker compose -f docker-compose.quickstart.yml logs litellm
 Edit `.env` and change the port (e.g., `WEB_PORT=3001`), then restart.
 
 **Out of memory?**
-Neo4j and the sandbox need ~4GB RAM combined. Increase Docker's memory limit in Docker Desktop settings.
+Neo4j and the sandbox need ~4GB RAM combined. Increase Docker's memory limit.
 
-**Need to reset everything?**
+**Reset everything?**
 ```bash
 ./start.sh --down
-docker volume rm decepticon_postgres_data decepticon_neo4j_data
+docker volume rm decepticon_postgres_data decepticon_neo4j_data decepticon_workspace
 ./start.sh
 ```
 
@@ -135,14 +129,9 @@ docker volume rm decepticon_postgres_data decepticon_neo4j_data
 
 For development with hot-reload:
 ```bash
-# Backend hot-reload
-make dev
-
-# Web frontend locally + backend in Docker
-make web-dev
-
-# CLI locally + backend in Docker
-make cli-dev
+make dev          # Backend hot-reload
+make web-dev      # Web locally + backend in Docker
+make cli-dev      # CLI locally + backend in Docker
 ```
 
 ## License
