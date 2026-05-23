@@ -73,23 +73,48 @@ check_prerequisites() {
   log_step "Checking prerequisites..."
 
   if ! command -v docker &>/dev/null; then
-    log_error "Docker is not installed. Install Docker first:"
-    log_error "  https://docs.docker.com/get-docker/"
-    exit 1
+    log_error "Docker is not installed. Attempting to install..."
+    install_docker
   fi
 
-  if ! docker compose version &>/dev/null; then
-    log_error "Docker Compose v2 is required. Upgrade Docker:"
+  # Check for Compose v2 plugin (docker compose) or fallback to docker-compose
+  if docker compose version &>/dev/null 2>&1; then
+    COMPOSE="docker compose -f ${COMPOSE_FILE}"
+  elif command -v docker-compose &>/dev/null; then
+    log_warn "Using docker-compose (v1). Consider upgrading to Docker Compose v2."
+    COMPOSE="docker-compose -f ${COMPOSE_FILE}"
+  else
+    log_error "Docker Compose is not installed. Install Docker Compose v2:"
     log_error "  https://docs.docker.com/compose/install/"
     exit 1
   fi
 
-  if ! docker info &>/dev/null; then
-    log_error "Docker daemon is not running. Start Docker first."
-    exit 1
+  # Start Docker daemon if not running
+  if ! docker info &>/dev/null 2>&1; then
+    log_warn "Docker daemon not running. Starting..."
+    service docker start 2>/dev/null || systemctl start docker 2>/dev/null || dockerd &>/dev/null &
+    sleep 3
+    if ! docker info &>/dev/null 2>&1; then
+      log_error "Failed to start Docker daemon. Start it manually."
+      exit 1
+    fi
   fi
 
-  log_info "Docker OK: $(docker version --format '{{.Server.Version}}')"
+  log_info "Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'unknown')"
+}
+
+# ── Install Docker (Debian/Ubuntu) ──────────────────────────────────────
+install_docker() {
+  log_step "Installing Docker..."
+  apt-get update -qq
+  apt-get install -y -qq ca-certificates curl gnupg lsb-release
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq
+  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  log_info "Docker installed successfully."
 }
 
 # ── Ensure .env exists ──────────────────────────────────────────────────
