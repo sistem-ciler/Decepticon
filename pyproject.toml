@@ -171,3 +171,9 @@ reportCallIssue = "warning"
 reportAssignmentType = "warning"
 reportReturnType = "warning"
 reportGeneralTypeIssues = "warning"
+# Phase 5 added ``py.typed`` markers to all three packages, which
+# flips pyright into strict re-export checking — re-exported imports
+# without an explicit ``__all__`` count as private. The existing
+# framework codebase predates this convention; demote to warning so
+# the migration list surfaces over time without blocking new work.
+reportPrivateImportUsage = "warning"
