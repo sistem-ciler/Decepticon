@@ -1,164 +1,150 @@
-# Architecture
+# Decepticon + BitNet — Integrated Architecture
 
-## Overview
-
-Decepticon runs on two Docker networks. Management infrastructure (LLM proxy, databases, agent API) and operational infrastructure (sandbox, C2, targets) are separated so that no offensive tool inside the sandbox can reach the LLM gateway, the API surface, or your credentials over the network. The agent drives the sandbox via the Docker socket, never via TCP.
+## System Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     User Interfaces                          │
-│          Terminal CLI (Ink)        Web Dashboard (Next.js)   │
-└─────────────────────────┬────────────────────────────────────┘
-                          │ SSE / LangGraph SDK
-┌─────────────────────────▼────────────────────────────────────┐
-│                  LangGraph Platform (port 2024)               │
-│              Agent Orchestration & Event Streaming            │
-└──────────┬───────────────────────────────────────────────────┘
-           │                              │ Docker socket only
-┌──────────▼──────────┐                   │
-│   decepticon-net    │       ┌───────────▼──────────────────┐
-│                     │       │       sandbox-net            │
-│  LiteLLM    :4000   │       │                              │
-│  PostgreSQL :5432   │       │  Sandbox (Kali Linux)        │
-│  LangGraph  :2024   │       │  C2 Server (Sliver)          │
-│  Web        :3000   │       │  Victim targets              │
-│                     │       │                              │
-│  Neo4j ◀────────────┼───────┼──▶ Neo4j  :7687/:7474        │
-│  (dual-homed bolt:// for agent + sandbox writes)            │
-└─────────────────────┘       └──────────────────────────────┘
-       Management                       Operations
-   (LLM, persistence, UI)        (exploitation, C2, targets)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Hetzner VPS (Bare Metal)                         │
+│                    188.245.210.10 (8+ vCPU, 32GB RAM)                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                     Docker Compose Stack                         │   │
+│  │                                                                  │   │
+│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │   │
+│  │  │   Web UI     │    │  LangGraph   │    │   LiteLLM    │      │   │
+│  │  │   (Next.js)  │───▶│  (Agents)    │───▶│   Gateway    │      │   │
+│  │  │   :3000      │    │   :2024      │    │   :4000      │      │   │
+│  │  └──────────────┘    └──────┬───────┘    └──────┬───────┘      │   │
+│  │         │                   │                    │               │   │
+│  │         │            ┌──────┴───────┐     ┌──────┴───────┐      │   │
+│  │         │            │   Sandbox    │     │    BitNet    │      │   │
+│  │         │            │   (Kali)     │     │  (1-bit LLM) │      │   │
+│  │         │            │   :9999      │     │   :8080      │      │   │
+│  │         │            └──────────────┘     └──────────────┘      │   │
+│  │         │                                                        │   │
+│  │  ┌──────┴───────┐    ┌──────────────┐    ┌──────────────┐      │   │
+│  │  │  PostgreSQL  │    │    Neo4j     │    │  Cloud APIs  │      │   │
+│  │  │   :5432      │    │   :7474      │    │  (fallback)  │      │   │
+│  │  └──────────────┘    └──────────────┘    └──────────────┘      │   │
+│  │                                                                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │                     Data Persistence                             │   │
+│  │  • postgres_data:    LiteLLM config + web dashboard DB          │   │
+│  │  • neo4j_data:       Attack chain graph database                │   │
+│  │  • bitnet_models:    Quantized 1-bit LLM models (~1.5GB each)  │   │
+│  │  • sandbox_workspace: Engagement files + findings               │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Network boundaries.** The sandbox cannot reach LiteLLM, PostgreSQL, the LangGraph API, or the web dashboard — none of the management services are routable from `sandbox-net`. The agent inside LangGraph cannot reach attack tooling over a TCP socket; the only channel into the sandbox is `docker exec` via the Docker socket bind-mount.
+## Service Details
 
-**Neo4j is the one shared service** — it sits on both networks because the sandbox writes findings into it (`bolt://neo4j:7687` from inside Kali) and the agent reads them back (`bolt://neo4j:7687` from inside LangGraph). It's a knowledge store, not a privileged service: the agent's credentials never traverse it, and a compromised sandbox can't pivot through Neo4j to LiteLLM or the API surface.
+### BitNet (:8024) — Local 1-bit LLM Inference
+- **What:** Microsoft's BitNet b1.58 inference server
+- **Model:** BitNet-b1.58-2B-4T (2.4B params, ~1.5GB RAM)
+- **API:** OpenAI-compatible (`/v1/completions`, `/v1/chat/completions`)
+- **Use:** Zero-cost local inference for high-volume agent tasks
+- **Fallback:** Cloud APIs (Anthropic, OpenAI) for complex reasoning
 
----
+### LiteLLM (:4000) — LLM Gateway
+- **What:** Unified LLM API gateway
+- **Routes to:** BitNet (local) → Cloud APIs (fallback)
+- **Features:** Load balancing, rate limiting, cost tracking
+- **Model priority:**
+  1. `bitnet/bitnet-2b` — Free, fast, good for most tasks
+  2. `bitnet/bitnet-3b` — Free, better quality
+  3. `anthropic/claude-sonnet-4` — Paid, best reasoning
+  4. `openai/gpt-4o` — Paid, fallback
 
-## Components
+### LangGraph (:2024) — Agent Orchestration
+- **What:** Decepticon's red team agent framework
+- **Agents:** recon, exploit, postexploit, analyst, reverser, etc.
+- **Tools:** nmap, sqlmap, metasploit (via sandbox)
+- **Memory:** Neo4j attack chain graph
 
-### LiteLLM Proxy (`decepticon-net`, port 4000)
+### Sandbox (:9999) — Red Team Tools
+- **What:** Kali Linux container with security tools
+- **Tools:** nmap, sqlmap, nikto, hydra, metasploit, etc.
+- **Isolation:** Docker container (shared kernel)
+- **Future:** Replace with Cube Sandbox (KVM MicroVM) for hardware isolation
 
-Routes all LLM requests to provider backends (Anthropic, OpenAI, Google, MiniMax, DeepSeek, xAI, Mistral, OpenRouter, Nvidia NIM, Ollama, plus 6 subscription OAuth handlers). Provides:
-- Unified API endpoint for all agents
-- Automatic fallback chain when a provider is unavailable
-- Usage tracking and rate limiting per provider
-- Billing aggregation across models
+### Web Dashboard (:3000) — Management UI
+- **What:** Next.js web interface
+- **Features:** Engagement management, agent monitoring, findings review
+- **Terminal:** WebSocket-based terminal (:3003)
 
-Configuration: `config/litellm.yaml`. Dynamic model registration: `config/litellm_dynamic_config.py` (Ollama, custom gateways, ad-hoc overrides).
-
-### LangGraph Platform (`decepticon-net`, port 2024)
-
-Hosts and orchestrates all agents. Provides:
-- Agent lifecycle management (spawn, execute, terminate)
-- Event streaming via Server-Sent Events (SSE)
-- State persistence between agent runs
-- The LangGraph SDK endpoint consumed by both the CLI and Web Dashboard
-
-### PostgreSQL (`decepticon-net`, port 5432)
-
-Persistent relational storage for:
-- LiteLLM virtual keys, spend logs, user budgets
-- Web dashboard data (engagements, findings, OPPLAN objectives, defense actions)
-- The single local user record
-
-Two logical databases: `litellm` (managed by LiteLLM) and `decepticon_web` (managed via Prisma in the web dashboard).
-
-### Neo4j Knowledge Graph (`sandbox-net` + `decepticon-net`, port 7687 / browser 7474)
-
-Graph database for the attack graph. Stores:
-- Hosts, services, vulnerabilities, credentials, accounts
-- Typed relationships (EXPLOITS, REQUIRES, AFFECTS, LEADS_TO)
-- Attack chain paths for multi-hop planning
-
-**Dual-homed by design**: the sandbox writes operational findings into the graph (`cypher-shell` from inside Kali), and the agent in LangGraph reads them back to plan the next objective. Both networks see the same Neo4j instance on the same `bolt://neo4j:7687` URI.
-
-### Sandbox (`sandbox-net`)
-
-Hardened Kali Linux container. Runs:
-- All agent-issued bash commands (via persistent tmux sessions)
-- Offensive tools: nmap, sqlmap, Impacket, Metasploit, Nuclei
-- Sliver C2 client (`sliver-client`) with auto-generated operator config
-- Interactive sessions for tools like `msfconsole`, `evil-winrm`
-
-The sandbox is the only place where commands actually execute. LangGraph reaches it via the Docker socket, not the network.
-
-### C2 Server (`sandbox-net`, Sliver)
-
-Sliver team server runs alongside the sandbox on the operational network. Features:
-- mTLS, HTTPS, and DNS-based C2 channels
-- Implant generation (Windows, Linux, macOS)
-- Session management for post-exploitation
-
-Activated via `COMPOSE_PROFILES=c2-sliver` (default). Future profiles: `c2-havoc`.
-
-### Web Dashboard (`decepticon-net`, port 3000 + terminal WebSocket on 3003)
-
-Next.js 16 application providing a browser-based control plane. See [Web Dashboard](web-dashboard.md).
-
----
-
-## Bash Tool & Interactive Sessions
-
-Agents execute commands through a thin `bash` tool backed by `DockerSandbox.execute_tmux()`. Key behaviors:
-
-**Persistent tmux sessions** — each named session persists across commands. An agent can open `msfconsole`, send commands into the session, and read output — the same way a human operator would.
-
-**Interactive prompt detection** — when a tool presents an interactive prompt (`msf6 >`, `sliver >`, `PS C:\>`), the agent detects it and sends follow-up commands rather than waiting forever.
-
-**Output management:**
-
-| Output size | Handling |
-|-------------|---------|
-| ≤ 15K chars | Returned inline in the tool result |
-| 15K – 100K chars | Saved to `/workspace/.scratch/`, summary returned |
-| > 5M chars | Watchdog kills the command |
-
-ANSI escape codes are stripped and repetitive output lines are compressed before being sent to the LLM.
-
----
-
-## Data Flow: Single Objective
+## Data Flow
 
 ```
-Orchestrator reads OPPLAN
-        │
-        ▼
-  Pick next pending objective
-        │
-        ▼
-  Spawn specialist agent (fresh context)
-  ┌─────────────────────────────────────────────┐
-  │  System prompt: RoE + skills + OPPLAN status │
-  │  Tools: bash → sandbox (via Docker socket)   │
-  │         read_file / write_file → workspace/  │
-  │         kg_* → Neo4j (bolt://neo4j:7687)     │
-  │         cve_lookup → NVD / OSV / EPSS APIs   │
-  └─────────────────────────────────────────────┘
-        │
-        ▼
-  Agent executes, writes findings to workspace/
-        │
-        ▼
-  Returns PASSED | BLOCKED
-        │
-        ▼
-  Orchestrator updates OPPLAN status
-  Findings appended to disk
-        │
-        ▼
-  Next objective (or Vaccine phase if all done)
+Operator → Web UI → LangGraph → LiteLLM → BitNet (local)
+                                    ↓
+                              Cloud APIs (fallback)
+                                    ↓
+                              LangGraph → Sandbox → Security Tools
+                                    ↓
+                              Neo4j (attack chain graph)
 ```
 
----
+## Resource Allocation (32GB RAM VPS)
 
-## Security Boundaries
+| Service | RAM | CPU | Disk |
+|---------|-----|-----|------|
+| BitNet 2B | 2GB | 2 cores | 2GB |
+| LiteLLM | 512MB | 0.5 cores | 100MB |
+| LangGraph | 1GB | 1 core | 500MB |
+| Sandbox | 2GB | 2 cores | 5GB |
+| Web | 512MB | 0.5 cores | 500MB |
+| PostgreSQL | 512MB | 0.5 cores | 1GB |
+| Neo4j | 1GB | 1 core | 2GB |
+| **Total** | **~8GB** | **8 cores** | **~12GB** |
+| **Remaining** | **24GB** | — | — |
 
-| Boundary | Enforcement |
-|----------|-------------|
-| Sandbox → Management services | Separate Docker networks; LiteLLM/PostgreSQL/LangGraph/Web are not routable from `sandbox-net` |
-| LangGraph → Sandbox | Docker socket only (no TCP) |
-| Sandbox → Neo4j | Allowed (intentional shared service for attack graph writes) |
-| Credential isolation | Provider API keys live on `decepticon-net`; the sandbox never sees them |
-| Host isolation | All commands run inside Docker; no host filesystem access except the engagement-scoped `/workspace` bind mount |
+## BitNet Model Selection
+
+| Model | Size | RAM | Speed | Quality | Best For |
+|-------|------|-----|-------|---------|----------|
+| falcon-e-1b | 1B | 0.8GB | 50+ tok/s | Basic | Edge, CCTV alerts |
+| bitnet-2b | 2.4B | 1.5GB | 30-50 tok/s | Good | General agent tasks |
+| falcon-e-3b | 3B | 1.5GB | 25-40 tok/s | Good | Multilingual |
+| bitnet-3b | 3.3B | 2.5GB | 20-35 tok/s | Better | Complex analysis |
+| llama3-8b-bitnet | 8B | 5GB | 10-20 tok/s | Best | Reasoning, reports |
+
+## Cost Comparison
+
+| Approach | Cost/1M tokens | Privacy | Latency |
+|----------|---------------|---------|---------|
+| Cloud APIs (current) | $2-4 | Data leaves | 200-500ms |
+| BitNet local | $0 | Full privacy | 50-100ms |
+| BitNet + Cloud fallback | $0.50-1 | Selective | 50-500ms |
+
+## Deployment
+
+```bash
+# One-command deployment
+curl -fsSL https://raw.githubusercontent.com/sistem-ciler/Decepticon/main/scripts/deploy-full.sh | bash
+
+# Or manual:
+git clone https://github.com/sistem-ciler/Decepticon.git
+cd Decepticon
+docker compose -f docker-compose.integrated.yml up --build -d
+```
+
+## Future: Cube Sandbox Integration
+
+For production red team operations, replace the Docker sandbox with Cube Sandbox:
+
+```
+Current:  Agent → Docker container (shared kernel) → tools
+Future:   Agent → Cube Sandbox MicroVM (dedicated KVM kernel) → tools
+          + BitNet 2B model inside each MicroVM
+          = 1000+ concurrent isolated agents per server
+```
+
+Requirements for Cube Sandbox:
+- Bare-metal server or PVM kernel on cloud VM
+- KVM support (/dev/kvm)
+- XFS filesystem for /data/cubelet

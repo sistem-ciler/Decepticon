@@ -1,0 +1,257 @@
+# =============================================================================
+# Decepticon + BitNet — Integrated Stack
+# =============================================================================
+# Complete AI red team platform with local 1-bit LLM inference.
+#
+# Services:
+#   - postgres:    Database for LiteLLM + web dashboard
+#   - neo4j:       Attack chain graph database
+#   - litellm:     LLM gateway (routes to BitNet + cloud APIs)
+#   - bitnet:      Local 1-bit LLM inference server
+#   - langgraph:   Agent orchestration (Decepticon agents)
+#   - sandbox:     Kali Linux security tools (Docker-based)
+#   - web:         Next.js dashboard (Decepticon UI + BitNet management)
+#
+# Usage:
+#   docker compose -f docker-compose.integrated.yml up --build
+# =============================================================================
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    container_name: decepticon-postgres
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: decepticon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-decepticon}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./containers/postgres-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U decepticon -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - decepticon-net
+
+  # ── Neo4j — Attack Chain Graph ─────────────────────────────────────
+  neo4j:
+    image: neo4j:5.24-community
+    container_name: decepticon-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-decepticon-graph}
+      NEO4J_server_memory_heap_initial__size: 128m
+      NEO4J_server_memory_heap_max__size: 384m
+      NEO4J_server_memory_pagecache_size: 128m
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    restart: unless-stopped
+    networks:
+      - decepticon-net
+      - sandbox-net
+
+  # ── BitNet — Local 1-bit LLM Inference ─────────────────────────────
+  bitnet:
+    build:
+      context: ./BitNet
+      dockerfile: ../containers/bitnet.Dockerfile
+    container_name: decepticon-bitnet
+    volumes:
+      - bitnet_models:/opt/bitnet/models
+      - bitnet_build:/opt/bitnet/build
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - BITNET_MODEL=${BITNET_MODEL:-bitnet-2b}
+      - BITNET_THREADS=${BITNET_THREADS:-4}
+      - BITNET_CTX_SIZE=${BITNET_CTX_SIZE:-4096}
+      - BITNET_PORT=8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - decepticon-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ── LiteLLM — LLM Gateway ──────────────────────────────────────────
+  litellm:
+    build:
+      context: .
+      dockerfile: containers/litellm.Dockerfile
+    container_name: decepticon-litellm
+    volumes:
+      - ./config/litellm.yaml:/app/config.yaml:ro
+    entrypoint: ["python", "/app/litellm_startup.py"]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:4000:4000"
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-decepticon-master}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-sk-decepticon-salt}
+      - DATABASE_URL=postgresql://decepticon:${POSTGRES_PASSWORD:-decepticon}@postgres:5432/litellm
+      # BitNet as a local model provider
+      - BITNET_API_URL=http://bitnet:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bitnet:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 120s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - decepticon-net
+
+  # ── Red Team Sandbox ───────────────────────────────────────────────
+  sandbox:
+    build:
+      context: .
+      dockerfile: containers/sandbox.Dockerfile
+    container_name: decepticon-sandbox
+    networks:
+      - sandbox-net
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - NET_BIND_SERVICE
+    environment:
+      - SANDBOX_DAEMON=1
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-decepticon-graph}
+    volumes:
+      - sandbox_workspace:/workspace
+    mem_limit: 4g
+    cpus: 2.0
+    pids_limit: 1024
+    depends_on:
+      neo4j:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── LangGraph — Agent Orchestration ────────────────────────────────
+  langgraph:
+    build:
+      context: .
+      dockerfile: containers/langgraph.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.0.0}
+    container_name: decepticon-langgraph
+    ports:
+      - "127.0.0.1:2024:2024"
+    environment:
+      - DECEPTICON_LLM__PROXY_URL=http://litellm:4000
+      - DECEPTICON_LLM__PROXY_API_KEY=${LITELLM_MASTER_KEY:-sk-decepticon-master}
+      - SAAS_SANDBOX_URL=http://sandbox:9999
+      - DECEPTICON_NEO4J_URI=bolt://neo4j:7687
+      - DECEPTICON_NEO4J_USER=neo4j
+      - DECEPTICON_NEO4J_PASSWORD=${NEO4J_PASSWORD:-decepticon-graph}
+      - DECEPTICON_MODEL_PROFILE=${DECEPTICON_MODEL_PROFILE:-eco}
+      - DECEPTICON_AUTH_PRIORITY=${DECEPTICON_AUTH_PRIORITY:-}
+      # Cloud API keys (optional — BitNet handles local inference)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+    volumes:
+      - sandbox_workspace:/workspace
+    depends_on:
+      litellm:
+        condition: service_healthy
+      sandbox:
+        condition: service_started
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:2024/ok')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 90s
+    networks:
+      - decepticon-net
+      - sandbox-net
+    restart: unless-stopped
+
+  # ── Web Dashboard — Next.js UI ─────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: containers/web.Dockerfile
+      args:
+        VERSION: ${VERSION:-0.0.0}
+    container_name: decepticon-web
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3003:3003"
+    environment:
+      - NEXT_PUBLIC_DECEPTICON_EDITION=oss
+      - LANGGRAPH_API_URL=http://langgraph:2024
+      - NEXT_PUBLIC_LANGGRAPH_API_URL=http://localhost:2024
+      - NEXT_PUBLIC_TERMINAL_WS_URL=ws://localhost:3003
+      - DATABASE_URL=postgresql://decepticon:${POSTGRES_PASSWORD:-decepticon}@postgres:5432/decepticon_web
+      - WORKSPACE_PATH=/workspace
+      - NEXTAUTH_SECRET=decepticon-secret-change-me
+      - NEXTAUTH_URL=http://localhost:3000
+    volumes:
+      - sandbox_workspace:/workspace
+    depends_on:
+      langgraph:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', r => { r.resume(); process.exit(r.statusCode < 500 ? 0 : 1); }).on('error', () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    networks:
+      - decepticon-net
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  sandbox_workspace:
+  bitnet_models:
+  bitnet_build:
+
+networks:
+  decepticon-net:
+    driver: bridge
+  sandbox-net:
+    driver: bridge
