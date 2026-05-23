@@ -90,14 +90,29 @@ check_prerequisites() {
   fi
 
   # Start Docker daemon if not running
-  if ! docker info &>/dev/null 2>&1; then
-    log_warn "Docker daemon not running. Starting..."
-    service docker start 2>/dev/null || systemctl start docker 2>/dev/null || dockerd &>/dev/null &
-    sleep 3
-    if ! docker info &>/dev/null 2>&1; then
-      log_error "Failed to start Docker daemon. Start it manually."
-      exit 1
+  local docker_ready=false
+  for i in 1 2 3 4 5; do
+    if docker info &>/dev/null 2>&1; then
+      docker_ready=true
+      break
     fi
+    sleep 2
+  done
+  if [ "$docker_ready" = false ]; then
+    log_warn "Docker daemon not running. Starting..."
+    nohup dockerd > /tmp/dockerd.log 2>&1 &
+    sleep 5
+    for i in 1 2 3 4 5; do
+      if docker info &>/dev/null 2>&1; then
+        docker_ready=true
+        break
+      fi
+      sleep 3
+    done
+  fi
+  if [ "$docker_ready" = false ]; then
+    log_error "Failed to start Docker daemon. Start it manually: dockerd &"
+    exit 1
   fi
 
   log_info "Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'unknown')"
