@@ -95,10 +95,23 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # subtrees (agents / llm / middleware / tools / core) are left out too
 # so the sandbox image doesn't bloat for the >95% of users who never
 # enable the daemon and so the dependency surface stays minimal.
-COPY decepticon/__init__.py /opt/decepticon/__init__.py
-COPY decepticon/sandbox_kernel /opt/decepticon/sandbox_kernel
-COPY decepticon/sandbox_server /opt/decepticon/sandbox_server
+# Phase 0 of the core/framework/sdk split relocated the framework
+# source tree to packages/decepticon/src/decepticon/. The sandbox
+# image stays an exec-only daemon — it only needs ``sandbox_kernel``
+# + ``sandbox_server`` + the bare ``__init__.py`` so they can be
+# imported as a Python package under PYTHONPATH=/opt.
+COPY packages/decepticon/src/decepticon/__init__.py /opt/decepticon/__init__.py
+COPY packages/decepticon/src/decepticon/sandbox_kernel /opt/decepticon/sandbox_kernel
+COPY packages/decepticon/src/decepticon/sandbox_server /opt/decepticon/sandbox_server
 ENV PYTHONPATH=/opt
+
+# Skip the framework boot path on this image — the sandbox container
+# ships only sandbox_kernel + sandbox_server, NOT decepticon-core or
+# the rest of the framework. ``decepticon/__init__.py`` checks this
+# env var and short-circuits the RoleRegistry + PluginRegistry setup
+# so the sandbox process can ``python -m decepticon.sandbox_server``
+# without importing decepticon-core (which isn't installed here).
+ENV DECEPTICON_SKIP_BOOT=1
 
 # Working directory for the agent's virtual filesystem.
 # Runs as root — security boundary is the container, not the user.

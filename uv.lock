@@ -480,6 +480,11 @@ dependencies = [
     { name = "decepticon-sdk" },
 ]
 
+[package.optional-dependencies]
+neo4j = [
+    { name = "decepticon", extra = ["neo4j"] },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
@@ -493,9 +498,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "decepticon", editable = "packages/decepticon" },
+    { name = "decepticon", extras = ["neo4j"], marker = "extra == 'neo4j'", editable = "packages/decepticon" },
     { name = "decepticon-core", editable = "packages/decepticon-core" },
     { name = "decepticon-sdk", editable = "packages/decepticon-sdk" },
 ]
+provides-extras = ["neo4j"]
 
 [package.metadata.requires-dev]
 dev = [

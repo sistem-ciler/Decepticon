@@ -14,6 +14,12 @@ dependencies = [
     "decepticon-sdk",
 ]
 
+[project.optional-dependencies]
+# Passthrough extras so ``uv sync --extra neo4j`` from the workspace
+# root activates the framework's neo4j driver. Without this, the extra
+# is invisible at root because uv treats extras as per-project.
+neo4j = ["decepticon[neo4j]"]
+
 [tool.uv]
 # Virtual root — no wheel built from the workspace umbrella. Real
 # packages live under ``packages/*`` and are built per their own

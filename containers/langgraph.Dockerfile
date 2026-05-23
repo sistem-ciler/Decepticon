@@ -42,6 +42,11 @@ RUN sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' \
 # stays lean for library consumers.
 RUN uv sync --no-dev --frozen --extra neo4j
 
+# uv sync creates /app/.venv but does NOT modify PATH. Prepend
+# the venv's bin/ so ``langgraph`` and any other workspace-installed
+# console-scripts resolve without a venv activation step.
+ENV PATH=/app/.venv/bin:$PATH
+
 EXPOSE 2024
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
