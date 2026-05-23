@@ -67,7 +67,10 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+# TID251 = flake8-tidy-imports banned-api. Enables the
+# decepticon-core langchain-free guarantee at lint time
+# (complements the runtime test_no_runtime_deps subprocess check).
+select = ["E", "F", "I", "W", "TID251"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
@@ -75,6 +78,31 @@ ignore = ["E501"]
 # them together instead of treating ``decepticon_core`` /
 # ``decepticon_sdk`` as third-party.
 known-first-party = ["decepticon", "decepticon_core", "decepticon_sdk"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Spec §11.4: ``decepticon-core`` must never import these. The
+# per-file-ignores section below scopes the rule to the core layer
+# only — the framework + SDK packages legitimately use them.
+"langchain".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"langchain_core".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"langchain_anthropic".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"langchain_openai".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"langgraph".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"deepagents".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"httpx".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"fastapi".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+"uvicorn".msg = "decepticon-core must stay langchain-free (spec §11.4)"
+
+[tool.ruff.lint.per-file-ignores]
+# Scope banned-api to decepticon-core: the framework, SDK, LiteLLM
+# config handlers, benchmark harness, and clients legitimately depend
+# on langchain / langgraph / deepagents / httpx / fastapi.
+"packages/decepticon/**" = ["TID251"]
+"packages/decepticon-sdk/**" = ["TID251"]
+"benchmark/**" = ["TID251"]
+"clients/**" = ["TID251"]
+"scripts/**" = ["TID251"]
+"config/**" = ["TID251"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
