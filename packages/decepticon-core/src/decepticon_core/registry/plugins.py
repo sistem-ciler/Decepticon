@@ -70,6 +70,11 @@ class PluginRegistry:
     _instance: PluginRegistry | None = None
     _plugins: tuple[PluginInfo, ...] = ()
     _collisions: tuple[PluginConflictWarning, ...] = ()
+    # Populated by the framework's _boot.run() — core itself can't
+    # build RoleResolution (no access to SLOTS_PER_ROLE composition
+    # or skills_sources_for), so the framework pushes the snapshot
+    # in after registering OSS roles.
+    _resolutions: dict[str, RoleResolution] = {}
 
     @classmethod
     def load(cls) -> PluginRegistry:
@@ -156,6 +161,23 @@ class PluginRegistry:
         cls._instance = None
         cls._plugins = ()
         cls._collisions = ()
+        cls._resolutions = {}
+
+    @classmethod
+    def set_role_resolution(cls, role: str, resolution: RoleResolution) -> None:
+        """Framework boot hook — stash a ``RoleResolution`` for ``role``.
+
+        Called by ``decepticon._boot.run()`` after registering OSS
+        roles. ``decepticon-core`` itself can't compose the resolution
+        (no access to ``DEFAULT_SLOT_FACTORIES`` or
+        ``skills_sources_for``); the framework pushes the snapshot in
+        through this hook so introspection consumers read it back
+        without any framework-side imports.
+
+        Idempotent. Calling with the same ``role`` overwrites the
+        previous resolution.
+        """
+        cls._resolutions[role] = resolution
 
     def list_plugins(self) -> tuple[PluginInfo, ...]:
         """Return every discovered plugin in (name, package)-sorted order."""
@@ -186,14 +208,15 @@ class PluginRegistry:
     def introspect_role(self, role: str) -> RoleResolution | None:
         """Return the resolved ``RoleResolution`` for ``role``.
 
-        Phase 2 stub: returns ``None`` for every role. A future commit
-        composes the role's middleware stack, tool list, skill sources,
-        and applied overrides into a frozen ``RoleResolution`` — the
-        framework's build pipeline already has all this information,
-        the missing piece is the read-only export back through this
-        method (closes spec gap §8 #7 fully).
+        Returns the snapshot pushed in by
+        ``decepticon._boot.run()`` (or by any caller using
+        ``PluginRegistry.set_role_resolution``). ``None`` when the
+        role was never registered — audit pipelines should treat
+        that as "role not active in this process."
 
         Spec §16.4 #2: read-only. No registry mutation here, ever.
+        The returned ``RoleResolution`` is a frozen dataclass with
+        tuple-typed collections so audit systems can memoize it on
+        ``(run_id, role)``.
         """
-        del role  # unused in stub
-        return None
+        return self._resolutions.get(role)
