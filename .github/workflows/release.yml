@@ -11,13 +11,19 @@ permissions:
   attestations: write
 
 jobs:
-  # Publish the OSS core wheel to PyPI via Trusted Publishing (OIDC) — no
-  # API token needed. The version is stamped from the tag the same way the
-  # Docker images are (sed on the "0.0.0" sentinel). PyPI side requires a
-  # one-time Trusted Publisher config (repo + workflow + job name) on
-  # pypi.org before the first successful publish.
+  # Publish all three workspace wheels (decepticon-core, decepticon,
+  # decepticon-sdk) to PyPI via Trusted Publishing (OIDC). Lockstep
+  # release per spec §13.1 — all three share one version string and
+  # publish in one job so the dependency closure is consistent.
+  #
+  # PyPI side requires a Trusted Publisher config per project on
+  # pypi.org before the first successful publish:
+  #   - decepticon-core  -> repo PurpleAILAB/Decepticon, workflow release.yml
+  #   - decepticon       -> same
+  #   - decepticon-sdk   -> same
+  # See: https://docs.pypi.org/trusted-publishers/
   publish-pypi:
-    name: Publish wheel to PyPI
+    name: Publish three workspace wheels to PyPI
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # PyPI Trusted Publishing (OIDC) — no API token
@@ -28,24 +34,45 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Stamp version from the tag
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.8.15"
+
+      - name: Stamp version from the tag across the workspace
         run: |
           version="${GITHUB_REF_NAME#v}"
-          sed -i 's/^version = "[^"]*"/version = "'"$version"'"/' pyproject.toml
+          # All four pyprojects share one version string per spec §13.1
+          # (lockstep release). Root umbrella stays at the sentinel since
+          # it doesn't ship as a wheel, but stamping it keeps uv build
+          # invariants happy.
+          sed -i 's/^version = "[^"]*"/version = "'"$version"'"/' \
+              pyproject.toml \
+              packages/decepticon-core/pyproject.toml \
+              packages/decepticon/pyproject.toml \
+              packages/decepticon-sdk/pyproject.toml
 
-      - name: Build wheel + sdist
+      - name: Build three workspace wheels + sdists
         run: |
-          python -m pip install --upgrade hatch
-          hatch build
+          # uv build --all-packages from the workspace root produces wheel
+          # + sdist for every workspace member into ./dist/:
+          #   dist/decepticon_core-<v>-py3-none-any.whl  + .tar.gz
+          #   dist/decepticon-<v>-py3-none-any.whl       + .tar.gz
+          #   dist/decepticon_sdk-<v>-py3-none-any.whl   + .tar.gz
+          uv build --all-packages
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI (all three wheels atomically)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # Idempotent re-runs: if the version is already on PyPI (e.g. a
+          # Idempotent re-runs: if a version is already on PyPI (e.g. a
           # partial-failure re-tag after Docker jobs needed to rebuild),
           # skip the upload instead of failing the workflow. PyPI itself
           # still forbids overwriting an existing version's files.
           skip-existing: true
+          # ``dist/`` carries wheels + sdists for all three packages — the
+          # gh-action-pypi-publish step uploads every artifact found there
+          # in one transaction.
+          packages-dir: dist
 
   # Source-tree version fields (pyproject.toml, package.json) carry a "0.0.0"
   # sentinel — the real release version is stamped into images at Docker
