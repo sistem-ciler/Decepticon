@@ -14,15 +14,24 @@
 set -euo pipefail
 
 COMPOSE_FILE="docker-compose.quickstart.yml"
-COMPOSE="docker compose -f ${COMPOSE_FILE}"
 PROJECT_NAME="decepticon"
+
+# Detect Docker Compose command
+if docker compose version &>/dev/null 2>&1; then
+    COMPOSE="docker compose -f ${COMPOSE_FILE}"
+elif command -v docker-compose &>/dev/null; then
+    COMPOSE="docker-compose -f ${COMPOSE_FILE}"
+else
+    echo "ERROR: Docker Compose not found. Install Docker first."
+    exit 1
+fi
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -52,15 +61,10 @@ for arg in "$@"; do
       echo "  --logs       Follow container logs"
       echo "  --help       Show this help"
       echo ""
-      echo "Environment variables:"
-      echo "  WEB_PORT       Web dashboard port (default: 3000)"
-      echo "  LANGGRAPH_PORT LangGraph API port (default: 2024)"
-      echo "  LITELLM_PORT   LiteLLM proxy port (default: 4000)"
-      echo ""
       echo "After startup:"
-      echo "  Web Dashboard:    http://localhost:\${WEB_PORT:-3000}"
-      echo "  LangGraph API:    http://localhost:\${LANGGRAPH_PORT:-2024}"
-      echo "  LiteLLM Proxy:    http://localhost:\${LITELLM_PORT:-4000}"
+      echo "  Web Dashboard:    http://localhost:3000"
+      echo "  LangGraph API:    http://localhost:2024"
+      echo "  LiteLLM Proxy:    http://localhost:4000"
       echo "  Neo4j Browser:    http://localhost:7474"
       exit 0
       ;;
@@ -72,108 +76,33 @@ done
 check_prerequisites() {
   log_step "Checking prerequisites..."
 
-  if ! command -v docker &>/dev/null; then
-    log_error "Docker is not installed. Attempting to install..."
-    install_docker
-  fi
-
-  # Check for Compose v2 plugin (docker compose) or fallback to docker-compose
-  if docker compose version &>/dev/null 2>&1; then
-    COMPOSE="docker compose -f ${COMPOSE_FILE}"
-  elif command -v docker-compose &>/dev/null; then
-    log_warn "Using docker-compose (v1). Consider upgrading to Docker Compose v2."
-    COMPOSE="docker-compose -f ${COMPOSE_FILE}"
-  else
-    log_error "Docker Compose is not installed. Install Docker Compose v2:"
-    log_error "  https://docs.docker.com/compose/install/"
-    exit 1
-  fi
-
-  # Start Docker daemon if not running
+  # Wait for Docker daemon (up to 30s)
   local docker_ready=false
-  for i in 1 2 3 4 5; do
+  for i in $(seq 1 15); do
     if docker info &>/dev/null 2>&1; then
       docker_ready=true
       break
     fi
     sleep 2
   done
+
   if [ "$docker_ready" = false ]; then
-    log_warn "Docker daemon not running. Starting..."
-    nohup dockerd > /tmp/dockerd.log 2>&1 &
-    sleep 5
-    for i in 1 2 3 4 5; do
-      if docker info &>/dev/null 2>&1; then
-        docker_ready=true
-        break
-      fi
-      sleep 3
-    done
-  fi
-  if [ "$docker_ready" = false ]; then
-    log_error "Failed to start Docker daemon. Start it manually: dockerd &"
+    log_error "Docker daemon is not responding."
+    log_error "Start Docker manually: sudo systemctl start docker"
+    log_error "Or if Docker is not installed:"
+    log_error "  curl -fsSL https://get.docker.com | sh"
+    log_error "  sudo usermod -aG docker \$USER"
     exit 1
   fi
 
   log_info "Docker OK: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 'unknown')"
 }
 
-# ── Install Docker (Debian/Ubuntu) ──────────────────────────────────────
-install_docker() {
-  log_step "Installing Docker..."
-  apt-get update -qq
-  apt-get install -y -qq ca-certificates curl gnupg lsb-release
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  log_info "Docker installed successfully."
-}
-
 # ── Ensure .env exists ──────────────────────────────────────────────────
 ensure_env() {
   if [ ! -f .env ]; then
     log_step "Creating .env from template..."
-    cat > .env << 'ENVEOF'
-# Decepticon Environment
-# Configure at least one LLM API key below, or use Ollama for local LLM.
-
-ANTHROPIC_API_KEY=your-anthropic-key-here
-OPENAI_API_KEY=your-openai-key-here
-GEMINI_API_KEY=
-DEEPSEEK_API_KEY=
-OPENROUTER_API_KEY=
-
-# LiteLLM
-LITELLM_MASTER_KEY=sk-decepticon-master
-LITELLM_SALT_KEY=sk-decepticon-salt
-
-# PostgreSQL
-POSTGRES_PASSWORD=decepticon
-
-# Neo4j
-NEO4J_PASSWORD=decepticon-graph
-
-# Model Profile: eco | max | test
-DECEPTICON_MODEL_PROFILE=eco
-
-# Ports
-WEB_PORT=3000
-LANGGRAPH_PORT=2024
-LITELLM_PORT=4000
-NEO4J_HTTP_PORT=7474
-NEO4J_BOLT_PORT=7687
-
-# Version
-DECEPTICON_VERSION=dev
-VERSION=0.0.0
-
-# Ollama (optional)
-# OLLAMA_API_BASE=http://host.docker.internal:11434
-# OLLAMA_MODEL=qwen2.5-coder-7b-instruct
-ENVEOF
+    sed 's/your-anthropic-key-here/sk-placeholder/' .env.example > .env 2>/dev/null || cp .env.example .env
     log_info ".env created. Edit it to add your LLM API keys."
   fi
 }
@@ -185,21 +114,21 @@ do_up() {
 
   log_step "Starting Decepticon..."
 
-  local build_args=()
+  local up_args=()
   if [ "$NO_BUILD" = true ]; then
     log_info "Skipping build (--no-build)"
-    build_args=("--no-build")
+    up_args=("--no-build")
   fi
 
-  log_step "Building and starting services..."
-  $COMPOSE build "${build_args[@]}" 2>&1 | tail -20
+  log_step "Building images (first run takes 5-10 minutes)..."
+    $COMPOSE build "${up_args[@]}" 2>&1 | tail -20
 
-  log_step "Starting containers..."
+  log_step "Starting services..."
   $COMPOSE up -d --wait --wait-timeout 600 2>&1 | tail -10
 
   echo ""
   log_info "═══════════════════════════════════════════════════════"
-  log_info "  Decepticon is starting up!"
+  log_info "  Decepticon is running!"
   log_info "═══════════════════════════════════════════════════════"
   echo ""
   log_info "  Web Dashboard:    http://localhost:${WEB_PORT:-3000}"
@@ -208,16 +137,12 @@ do_up() {
   log_info "  Neo4j Browser:    http://localhost:7474"
   log_info "    (user: neo4j, pass: ${NEO4J_PASSWORD:-decepticon-graph})"
   echo ""
-  log_warn "  First build takes 5-10 minutes. Services may need"
-  log_warn "  1-2 minutes to become healthy after containers start."
-  echo ""
   log_info "  View logs:  ./start.sh --logs"
   log_info "  Stop:       ./start.sh --down"
   log_info "  Status:     ./start.sh --status"
   echo ""
 
-  # Wait a moment then show status
-  sleep 5
+  sleep 3
   do_status
 }
 
@@ -233,7 +158,7 @@ do_status() {
   echo ""
   log_info "Service Status:"
   echo ""
-  $COMPOSE ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || $COMPOSE ps
+  $COMPOSE ps 2>/dev/null || true
   echo ""
 }
 
