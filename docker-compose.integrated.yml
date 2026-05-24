@@ -72,8 +72,8 @@ services:
   # ── BitNet — Local 1-bit LLM Inference ─────────────────────────────
   bitnet:
     build:
-      context: ./BitNet
-      dockerfile: ../containers/bitnet.Dockerfile
+      context: ../BitNet
+      dockerfile: ../decepticon/containers/bitnet.Dockerfile
     container_name: decepticon-bitnet
     volumes:
       - bitnet_models:/opt/bitnet/models

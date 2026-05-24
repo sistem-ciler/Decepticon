@@ -2,7 +2,7 @@ import importlib.resources
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
 
-from .factory import build_sandbox_backend
+from .factory import build_sandbox_backend, get_backend_names, register_backend
 from .http_sandbox import HTTPSandbox
 
 # Skills ship as package data under ``decepticon/skills/`` and are read
@@ -20,12 +20,12 @@ def make_agent_backend(sandbox):
     Routes ``/skills/`` to a local ``FilesystemBackend`` reading the
     package's ``decepticon/skills`` tree in-process, and routes everything
     else (notably ``/workspace/``) through the sandbox transport
-    (``HTTPSandbox``). Returning a ``CompositeBackend`` lets
+    (``HTTPSandbox`` or ``CubeSandboxBackend``). Returning a ``CompositeBackend`` lets
     ``SkillsMiddleware`` and ``FilesystemMiddleware`` share the same
     backend object while reading from different physical storage:
 
       /skills/...   ->  decepticon/skills/... read in-process (~5ms)
-      /workspace/.. ->  sandbox container via HTTP (isolated, persistent)
+      /workspace/.. ->  sandbox via HTTP or KVM MicroVM (isolated, persistent)
 
     This replaces the previous pattern where every middleware used a raw
     sandbox for both paths, which forced an HTTP round-trip per skill
@@ -48,5 +48,7 @@ __all__ = [
     "HTTPSandbox",
     "SKILLS_LOCAL_PATH",
     "build_sandbox_backend",
+    "get_backend_names",
+    "register_backend",
     "make_agent_backend",
 ]
